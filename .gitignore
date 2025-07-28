@@ -1,0 +1,17 @@
+# Log files
+all_logs.log
+
+# Database file
+battleship.db
+
+# Environment file
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/

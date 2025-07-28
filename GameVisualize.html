@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Battleship Tournament Visualizer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Roboto Mono', monospace;
+            background-color: #111827;
+            color: #d1d5db;
+        }
+        .grid-container {
+            display: grid;
+            grid-template-columns: repeat(10, minmax(0, 1fr));
+            gap: 3px;
+            border: 2px solid #4b5563;
+            padding: 5px;
+            background-color: #1f2937;
+            border-radius: 8px;
+        }
+        .grid-cell {
+            width: 100%;
+            padding-bottom: 100%;
+            position: relative;
+            background-color: #374151;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: clamp(0.5rem, 2vw, 1.2rem);
+            font-weight: bold;
+        }
+        .grid-cell.water { background-color: #4b5563; }
+        .grid-cell.hit { background-color: #ef4444; color: white; }
+        .grid-cell.miss { background-color: #6b7280; color: #1f2937; }
+        .grid-cell.ship { background-color: #a5b4fc; } /* For final board view */
+        
+        input[type=range] {
+            -webkit-appearance: none;
+            width: 100%;
+            background: transparent;
+        }
+        input[type=range]:focus {
+            outline: none;
+        }
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 8px;
+            cursor: pointer;
+            background: #374151;
+            border-radius: 5px;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 24px;
+            width: 16px;
+            border-radius: 3px;
+            background: #6366f1;
+            cursor: pointer;
+            margin-top: -8px;
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <div class="max-w-7xl mx-auto">
+        <header class="text-center mb-8">
+            <h1 class="text-4xl md:text-5xl font-bold text-indigo-400 mb-2">LLM Battleship Tournament</h1>
+            <p class="text-lg text-gray-400">Live analysis from SQLite Database</p>
+        </header>
+
+        <!-- Summary Section -->
+        <section id="summary-section" class="bg-gray-800 p-6 rounded-lg shadow-lg mb-8 text-center">
+            <h2 class="text-2xl font-bold text-white mb-4">Tournament Summary</h2>
+            <div id="summary-content" class="text-xl">Loading results...</div>
+        </section>
+
+        <!-- Visualizer Section -->
+        <section id="visualizer-section">
+             <div class="flex flex-col md:flex-row justify-between items-center mb-4 gap-4">
+                <div>
+                    <label for="game-select" class="font-bold text-lg">Select Game:</label>
+                    <select id="game-select" class="bg-gray-700 border border-gray-600 rounded-md p-2 ml-2"></select>
+                </div>
+                 <div class="flex items-center gap-4">
+                    <button id="live-view-btn" class="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-md">
+                        ● Live
+                    </button>
+                    <div id="game-winner-info" class="text-xl font-bold text-green-400"></div>
+                </div>
+            </div>
+
+            <!-- Boards -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <div>
+                    <h3 id="player1-name-label" class="text-2xl font-semibold text-center text-cyan-400 mb-4">Player 1's View</h3>
+                    <div id="board-llm1" class="grid-container"></div>
+                </div>
+                <div>
+                    <h3 id="player2-name-label" class="text-2xl font-semibold text-center text-rose-400 mb-4">Player 2's View</h3>
+                    <div id="board-llm2" class="grid-container"></div>
+                </div>
+            </div>
+
+            <!-- Turn Slider & Info -->
+            <div class="mt-8 bg-gray-800 p-6 rounded-lg shadow-lg">
+                <div class="flex justify-between items-center mb-2 font-mono">
+                    <span id="turn-info" class="text-lg font-bold">Turn: 0</span>
+                    <span id="turn-action" class="text-lg">Game Start</span>
+                </div>
+                <input type="range" id="turn-slider" min="0" value="0" class="w-full">
+                 <div class="flex justify-between items-center text-xs mt-1">
+                    <span>Start</span>
+                    <span id="total-turns-label">End</span>
+                </div>
+            </div>
+             <div class="text-center mt-4">
+                <input type="checkbox" id="show-final-board" class="mr-2">
+                <label for="show-final-board">Show Final Ship Placements</label>
+            </div>
+        </section>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const summaryContent = document.getElementById('summary-content');
+            const visualizerSection = document.getElementById('visualizer-section');
+            const gameSelect = document.getElementById('game-select');
+            const turnSlider = document.getElementById('turn-slider');
+            const boardLLM1 = document.getElementById('board-llm1');
+            const boardLLM2 = document.getElementById('board-llm2');
+            const gameWinnerInfo = document.getElementById('game-winner-info');
+            const turnInfo = document.getElementById('turn-info');
+            const turnAction = document.getElementById('turn-action');
+            const totalTurnsLabel = document.getElementById('total-turns-label');
+            const showFinalBoardCheckbox = document.getElementById('show-final-board');
+            const liveViewBtn = document.getElementById('live-view-btn');
+            const player1NameLabel = document.getElementById('player1-name-label');
+            const player2NameLabel = document.getElementById('player2-name-label');
+
+            let currentGameData = null;
+            let liveUpdateInterval = null;
+
+            // --- Data Loading ---
+            async function loadSummary() {
+                try {
+                    const response = await fetch('/api/summary');
+                    const data = await response.json();
+                    displaySummary(data);
+                } catch (error) {
+                    summaryContent.innerHTML = `<p class="text-red-400">Error loading summary.</p>`;
+                    console.error(error);
+                }
+            }
+            
+            async function loadGameList() {
+                try {
+                    const response = await fetch('/api/games');
+                    const games = await response.json();
+                    populateGameSelector(games);
+                } catch (error) {
+                    console.error("Failed to load game list", error);
+                }
+            }
+
+            async function loadGameData(gameId) {
+                try {
+                    const response = await fetch(`/api/game/${gameId}`);
+                    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                    currentGameData = await response.json();
+                    displayGame(currentGameData);
+                } catch (error) {
+                    gameWinnerInfo.textContent = "Error loading game data.";
+                    console.error(error);
+                }
+            }
+            
+            function displayGame(gameData) {
+                gameWinnerInfo.textContent = gameData.winner ? `Winner: ${gameData.winner}` : 'In Progress';
+                player1NameLabel.textContent = `${gameData.player1_name}'s View`;
+                player2NameLabel.textContent = `${gameData.player2_name}'s View`;
+                turnSlider.max = gameData.history.length;
+                totalTurnsLabel.textContent = `End (${gameData.history.length} turns)`;
+                turnSlider.value = turnSlider.max; // Default to the latest turn
+                renderTurn(parseInt(turnSlider.value));
+            }
+
+            // --- UI Population ---
+            function displaySummary(summaryData) {
+                const { total_games, win_counts } = summaryData;
+                let summaryHtml = `<p>Total Games Played: <span class="font-bold text-white">${total_games}</span></p>`;
+                
+                const colors = ['text-cyan-400', 'text-rose-400', 'text-green-400', 'text-yellow-400'];
+                let colorIndex = 0;
+                for (const [player, wins] of Object.entries(win_counts)) {
+                    const color = colors[colorIndex % colors.length];
+                    summaryHtml += `<p>${player} Wins: <span class="font-bold ${color}">${wins}</span></p>`;
+                    colorIndex++;
+                }
+
+                summaryContent.innerHTML = summaryHtml;
+            }
+
+            function populateGameSelector(games) {
+                gameSelect.innerHTML = '';
+                 games.forEach(game => {
+                    const option = document.createElement('option');
+                    option.value = game.game_id;
+                    option.textContent = `Game ${game.game_id}: ${game.player1_name} vs ${game.player2_name} (${game.turns} turns)`;
+                    gameSelect.appendChild(option);
+                });
+                // Add live option
+                const liveOption = document.createElement('option');
+                liveOption.value = 'live';
+                liveOption.textContent = '--- Live Game ---';
+                gameSelect.prepend(liveOption);
+                gameSelect.value = 'live';
+            }
+
+            // --- Rendering Logic ---
+            function renderTurn(turnIndex) {
+                if (!currentGameData) return;
+                const showFinal = showFinalBoardCheckbox.checked;
+
+                const player1 = currentGameData.player1_name;
+                const player2 = currentGameData.player2_name;
+
+                if (turnIndex === 0) {
+                    turnInfo.textContent = `Turn: 0`;
+                    turnAction.textContent = 'Game Start';
+                    renderBoard(boardLLM1, createEmptyBoard(), showFinal ? currentGameData.final_boards[player1] : null);
+                    renderBoard(boardLLM2, createEmptyBoard(), showFinal ? currentGameData.final_boards[player2] : null);
+                    return;
+                }
+
+                const turnData = currentGameData.history[turnIndex - 1];
+                turnInfo.textContent = `Turn: ${turnData.turn}`;
+                turnAction.textContent = `${turnData.player} fires at ${JSON.stringify(turnData.shot)} -> ${turnData.result}`;
+                
+                // The board states in the DB are still called LLM_1 and LLM_2, but we map them correctly
+                renderBoard(boardLLM1, turnData.boards.LLM_1, showFinal ? currentGameData.final_boards[player1] : null);
+                renderBoard(boardLLM2, turnData.boards.LLM_2, showFinal ? currentGameData.final_boards[player2] : null);
+            }
+
+            function renderBoard(container, viewBoard, finalBoard = null) {
+                container.innerHTML = '';
+                for (let r = 0; r < 10; r++) {
+                    for (let c = 0; c < 10; c++) {
+                        const cell = document.createElement('div');
+                        cell.classList.add('grid-cell');
+                        const cellState = viewBoard[r][c];
+                        let textContent = '';
+
+                        if (finalBoard && finalBoard[r][c] === 'S' && cellState === 'W') {
+                            cell.classList.add('ship');
+                        }
+
+                        if (cellState === 'H') {
+                            cell.classList.add('hit');
+                            textContent = '🔥';
+                        } else if (cellState === 'M') {
+                            cell.classList.add('miss');
+                            textContent = '●';
+                        } else {
+                            cell.classList.add('water');
+                        }
+                        cell.textContent = textContent;
+                        container.appendChild(cell);
+                    }
+                }
+            }
+            
+            function createEmptyBoard() {
+                return Array(10).fill(0).map(() => Array(10).fill('W'));
+            }
+
+            // --- Live View Logic ---
+            function startLiveView() {
+                stopLiveView(); // Ensure no multiple intervals running
+                liveViewBtn.classList.add('animate-pulse');
+                liveUpdateInterval = setInterval(async () => {
+                    await loadGameData('latest');
+                    await loadSummary(); // Also refresh summary
+                }, 2000); // Poll every 2 seconds
+            }
+
+            function stopLiveView() {
+                clearInterval(liveUpdateInterval);
+                liveUpdateInterval = null;
+                liveViewBtn.classList.remove('animate-pulse');
+            }
+
+            // --- Event Listeners ---
+            gameSelect.addEventListener('change', (e) => {
+                if (e.target.value === 'live') {
+                    startLiveView();
+                    loadGameData('latest');
+                } else {
+                    stopLiveView();
+                    loadGameData(e.target.value);
+                }
+            });
+            
+            liveViewBtn.addEventListener('click', () => {
+                gameSelect.value = 'live';
+                startLiveView();
+                loadGameData('latest');
+            });
+
+            turnSlider.addEventListener('input', (e) => {
+                stopLiveView(); // Stop live updates when user interacts with slider
+                gameSelect.value = currentGameData.game_id;
+                renderTurn(parseInt(e.target.value))
+            });
+            showFinalBoardCheckbox.addEventListener('change', () => renderTurn(parseInt(turnSlider.value)));
+
+            // --- Initial Load ---
+            async function initialize() {
+                await loadSummary();
+                await loadGameList();
+                await loadGameData('latest'); // Load latest game by default
+                startLiveView(); // Start in live mode
+            }
+
+            initialize();
+        });
+    </script>
+</body>
+</html>
